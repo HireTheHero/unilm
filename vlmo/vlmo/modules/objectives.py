@@ -77,9 +77,9 @@ def compute_itm_hardneg(pl_module, batch, sim_i2t, sim_t2i):
     pos_len = batch["text_ids"].size(0)
     neg_len = batch["text_ids"].size(0)
     bsz = batch["text_ids"].size(0)
-    itm_labels = torch.cat([torch.ones(pos_len), torch.zeros(neg_len), torch.zeros(neg_len)]).to(
-        pl_module.device
-    )
+    itm_labels = torch.cat(
+        [torch.ones(pos_len), torch.zeros(neg_len), torch.zeros(neg_len)]
+    ).to(pl_module.device)
 
     batch = {k: v for k, v in batch.items()}
     infer_pos = pl_module.infer(batch, mask_text=False, mask_image=False)
@@ -99,18 +99,14 @@ def compute_itm_hardneg(pl_module, batch, sim_i2t, sim_t2i):
         gathered_text_masks = [
             torch.zeros_like(batch_text_masks) for _ in range(world_size)
         ]
-        gathered_image = [
-            torch.zeros_like(batch_image) for _ in range(world_size)
-        ]
+        gathered_image = [torch.zeros_like(batch_image) for _ in range(world_size)]
 
         dist.all_gather(gathered_text_ids, batch_text_ids)
         dist.all_gather(gathered_text_masks, batch_text_masks)
         dist.all_gather(gathered_image, batch_image)
 
         all_text_ids = torch.cat(
-            [batch_text_ids]
-            + gathered_text_ids[:rank]
-            + gathered_text_ids[rank + 1 :]
+            [batch_text_ids] + gathered_text_ids[:rank] + gathered_text_ids[rank + 1 :]
         )
         all_text_masks = torch.cat(
             [batch_text_masks]
@@ -118,23 +114,21 @@ def compute_itm_hardneg(pl_module, batch, sim_i2t, sim_t2i):
             + gathered_text_masks[rank + 1 :]
         )
         all_image = torch.cat(
-            [batch_image]
-            + gathered_image[:rank]
-            + gathered_image[rank + 1 :]
+            [batch_image] + gathered_image[:rank] + gathered_image[rank + 1 :]
         )
 
-    with torch.no_grad():       
+    with torch.no_grad():
         weights_i2t = F.softmax(sim_i2t[:bsz, :].float(), dim=1)
         weights_t2i = F.softmax(sim_t2i[:bsz, :].float(), dim=1)
 
         weights_i2t.fill_diagonal_(0)
         weights_t2i.fill_diagonal_(0)
-    
-    images_neg = []    
+
+    images_neg = []
     for b in range(bsz):
         neg_idx = torch.multinomial(weights_t2i[b], 1).item()
         images_neg.append(all_image[neg_idx])
-    images_neg = torch.stack(images_neg, dim=0)   
+    images_neg = torch.stack(images_neg, dim=0)
 
     # select a negative text for each image
     text_ids_neg = []
@@ -144,17 +138,34 @@ def compute_itm_hardneg(pl_module, batch, sim_i2t, sim_t2i):
         text_ids_neg.append(all_text_ids[neg_idx])
         text_masks_neg.append(all_text_masks[neg_idx])
 
-    text_ids_neg = torch.stack(text_ids_neg, dim=0)     
-    text_masks_neg = torch.stack(text_masks_neg, dim=0)      
+    text_ids_neg = torch.stack(text_ids_neg, dim=0)
+    text_masks_neg = torch.stack(text_masks_neg, dim=0)
 
     # text_labels is not used in ITM loss
-    batch_imgs_neg = {"image":[images_neg], "text_ids":batch["text_ids"], "text_labels":batch["text_labels"], "text_masks":batch["text_masks"]}
+    batch_imgs_neg = {
+        "image": [images_neg],
+        "text_ids": batch["text_ids"],
+        "text_labels": batch["text_labels"],
+        "text_masks": batch["text_masks"],
+    }
     infer_imags_neg = pl_module.infer(batch_imgs_neg, mask_text=False, mask_image=False)
-    
-    batch_text_neg = {"image":batch["image"], "text_ids":text_ids_neg, "text_labels":batch["text_labels"], "text_masks":text_masks_neg}
+
+    batch_text_neg = {
+        "image": batch["image"],
+        "text_ids": text_ids_neg,
+        "text_labels": batch["text_labels"],
+        "text_masks": text_masks_neg,
+    }
     infer_text_neg = pl_module.infer(batch_text_neg, mask_text=False, mask_image=False)
 
-    all_cls_feats = torch.cat([infer_pos["cls_feats"], infer_imags_neg["cls_feats"], infer_text_neg["cls_feats"]], dim=0)
+    all_cls_feats = torch.cat(
+        [
+            infer_pos["cls_feats"],
+            infer_imags_neg["cls_feats"],
+            infer_text_neg["cls_feats"],
+        ],
+        dim=0,
+    )
 
     itm_logits = pl_module.itm_score(all_cls_feats)
     itm_loss = F.cross_entropy(itm_logits, itm_labels.long())
@@ -240,14 +251,20 @@ def compute_itc(pl_module, batch, aggregate=True):
             + gathered_text_vlffn_features[rank + 1 :]
         )
         # this is needed to send gradients back everywhere.
-        logits_per_vlffn_image = logit_vl_scale * all_image_vlffn_features @ all_text_vlffn_features.t()
+        logits_per_vlffn_image = (
+            logit_vl_scale * all_image_vlffn_features @ all_text_vlffn_features.t()
+        )
         logits_per_vlffn_text = logits_per_vlffn_image.t()
 
     else:
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logit_scale * text_features @ image_features.t()
 
-    ground_truth = torch.arange(len(logits_per_image)).long().to(device=logits_per_image.get_device())
+    ground_truth = (
+        torch.arange(len(logits_per_image))
+        .long()
+        .to(device=logits_per_image.get_device())
+    )
 
     itc_loss = (
         F.cross_entropy(logits_per_image.float(), ground_truth)
@@ -284,7 +301,9 @@ def compute_itc(pl_module, batch, aggregate=True):
     pl_module.log(f"itc/{phase}/i2t_accuracy", i2t_acc)
     pl_module.log(f"itc/{phase}/t2i_accuracy", t2i_acc)
 
-    vl_scale = getattr(pl_module, f"{phase}_itc_vl_logit_scale")(ret["itc_logit_vl_scale"])
+    vl_scale = getattr(pl_module, f"{phase}_itc_vl_logit_scale")(
+        ret["itc_logit_vl_scale"]
+    )
     vl_i2t_acc = getattr(pl_module, f"{phase}_itc_vl_i2t_accuracy")(
         logits_per_vlffn_image, ret["itc_labels"]
     )
@@ -340,7 +359,11 @@ def compute_irtr(pl_module, batch, aggregate=True):
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logit_scale * text_features @ image_features.t()
 
-    ground_truth = torch.arange(len(logits_per_image)).long().to(device=logits_per_image.get_device())
+    ground_truth = (
+        torch.arange(len(logits_per_image))
+        .long()
+        .to(device=logits_per_image.get_device())
+    )
 
     irtr_loss = (
         F.cross_entropy(logits_per_image.float(), ground_truth)
@@ -474,7 +497,7 @@ def compute_nlvr2(pl_module, batch):
 def compute_irtr_recall(pl_module, split="test"):
     world_size = dist.get_world_size()
     rank = dist.get_rank()
-    
+
     if split == "val":
         rank_zero_info("Use val set...")
         text_dset = pl_module.trainer.datamodule.dms[0].make_no_false_val_dset()
@@ -486,7 +509,7 @@ def compute_irtr_recall(pl_module, split="test"):
     text_loader = torch.utils.data.DataLoader(
         text_dset,
         batch_size=32,
-        num_workers=2, #pl_module.hparams.config["num_workers"],
+        num_workers=2,  # pl_module.hparams.config["num_workers"],
         pin_memory=True,
         collate_fn=functools.partial(
             text_dset.collate,
@@ -507,7 +530,7 @@ def compute_irtr_recall(pl_module, split="test"):
     image_loader = torch.utils.data.DataLoader(
         image_dset,
         batch_size=32,
-        num_workers=2, #pl_module.hparams.config["num_workers"],
+        num_workers=2,  # pl_module.hparams.config["num_workers"],
         pin_memory=True,
         collate_fn=functools.partial(
             image_dset.collate,
@@ -552,22 +575,22 @@ def compute_irtr_recall(pl_module, split="test"):
     for txt_batch in text_preload:
         with torch.cuda.amp.autocast():
             cls_feats = pl_module.infer_text_ft(
-                    {
-                        "text_ids": txt_batch["text_ids"],
-                        "text_masks": txt_batch["text_masks"],
-                        "text_labels": txt_batch["text_labels"],
-                    }
-                )["cls_feats"]
+                {
+                    "text_ids": txt_batch["text_ids"],
+                    "text_masks": txt_batch["text_masks"],
+                    "text_labels": txt_batch["text_labels"],
+                }
+            )["cls_feats"]
         txt_cls_feats.append(cls_feats)
 
     img_cls_feats = list()
     for img_batch in image_preload:
         with torch.cuda.amp.autocast():
             cls_feats = pl_module.infer_image_ft(
-                    {
-                        "image": img_batch["image"],
-                    }
-                )["cls_feats"]
+                {
+                    "image": img_batch["image"],
+                }
+            )["cls_feats"]
         img_cls_feats.append(cls_feats)
 
     txt_cls_feats = torch.cat(txt_cls_feats)
@@ -609,7 +632,7 @@ def compute_irtr_recall(pl_module, split="test"):
 def compute_irtr_recall_with_rerank(pl_module, split="test"):
     world_size = dist.get_world_size()
     rank = dist.get_rank()
-    
+
     if split == "val":
         rank_zero_info("Use val set...")
         text_dset = pl_module.trainer.datamodule.dms[0].make_no_false_val_dset()
@@ -621,7 +644,7 @@ def compute_irtr_recall_with_rerank(pl_module, split="test"):
     text_loader = torch.utils.data.DataLoader(
         text_dset,
         batch_size=32,
-        num_workers=2, #pl_module.hparams.config["num_workers"],
+        num_workers=2,  # pl_module.hparams.config["num_workers"],
         pin_memory=True,
         collate_fn=functools.partial(
             text_dset.collate,
@@ -642,7 +665,7 @@ def compute_irtr_recall_with_rerank(pl_module, split="test"):
     image_loader = torch.utils.data.DataLoader(
         image_dset,
         batch_size=32,
-        num_workers=2, #pl_module.hparams.config["num_workers"],
+        num_workers=2,  # pl_module.hparams.config["num_workers"],
         pin_memory=True,
         collate_fn=functools.partial(
             image_dset.collate,
@@ -695,22 +718,22 @@ def compute_irtr_recall_with_rerank(pl_module, split="test"):
     for txt_batch in text_preload:
         with torch.cuda.amp.autocast():
             cls_feats = pl_module.infer_text_ft(
-                    {
-                        "text_ids": txt_batch["text_ids"],
-                        "text_masks": txt_batch["text_masks"],
-                        "text_labels": txt_batch["text_labels"],
-                    }
-                )["cls_feats"]
+                {
+                    "text_ids": txt_batch["text_ids"],
+                    "text_masks": txt_batch["text_masks"],
+                    "text_labels": txt_batch["text_labels"],
+                }
+            )["cls_feats"]
         txt_cls_feats.append(cls_feats)
 
     img_cls_feats = list()
     for img_batch in image_preload:
         with torch.cuda.amp.autocast():
             cls_feats = pl_module.infer_image_ft(
-                    {
-                        "image": img_batch["image"],
-                    }
-                )["cls_feats"]
+                {
+                    "image": img_batch["image"],
+                }
+            )["cls_feats"]
         img_cls_feats.append(cls_feats)
 
     txt_cls_feats = torch.cat(txt_cls_feats)
@@ -720,53 +743,65 @@ def compute_irtr_recall_with_rerank(pl_module, split="test"):
 
     rank_zero_info("scores.size(): {}".format(scores.size(), split))
 
-
     scores_i2t = torch.full((len(iids), len(tiids)), -100.0).to(pl_module.device)
-    
+
     k_test = pl_module.hparams.config["k_test"]
     num_tasks = world_size
     step = scores.size(0) // num_tasks + 1
     start = rank * step
-    end = min(scores.size(0), start+step)
+    end = min(scores.size(0), start + step)
 
-    for i, sims in enumerate(scores[start:end]): 
-        if i%100 == 0:
+    for i, sims in enumerate(scores[start:end]):
+        if i % 100 == 0:
             rank_zero_info("TR Rerank: {}".format(i))
         topk_sim, topk_idx = sims.topk(k=k_test, dim=0)
-        cur_images = all_image[start+i].repeat(k_test, 1, 1, 1)
+        cur_images = all_image[start + i].repeat(k_test, 1, 1, 1)
         cur_text_ids = all_text_ids[topk_idx]
         cur_text_masks = all_text_masks[topk_idx]
         cur_text_labels = all_text_labels[topk_idx]
-        
-        cur_rerank_batch = {"image":[cur_images], "text_ids":cur_text_ids, "text_labels":cur_text_labels, "text_masks":cur_text_masks}
-        infer_rerank = pl_module.infer(cur_rerank_batch, mask_text=False, mask_image=False)
+
+        cur_rerank_batch = {
+            "image": [cur_images],
+            "text_ids": cur_text_ids,
+            "text_labels": cur_text_labels,
+            "text_masks": cur_text_masks,
+        }
+        infer_rerank = pl_module.infer(
+            cur_rerank_batch, mask_text=False, mask_image=False
+        )
         itm_logits = pl_module.itm_score(infer_rerank["cls_feats"])
-        itm_scores = itm_logits[:,1]
-        scores_i2t[start+i,topk_idx] = itm_scores
+        itm_scores = itm_logits[:, 1]
+        scores_i2t[start + i, topk_idx] = itm_scores
 
     scores = scores.t()
     scores_t2i = torch.full((len(tiids), len(iids)), -100.0).to(pl_module.device)
-    
+
     step = scores.size(0) // num_tasks + 1
     start = rank * step
-    end = min(scores.size(0), start+step)    
-    
-    for i,sims in enumerate(scores[start:end]): 
+    end = min(scores.size(0), start + step)
+
+    for i, sims in enumerate(scores[start:end]):
         topk_sim, topk_idx = sims.topk(k=k_test, dim=0)
         cur_images = all_image[topk_idx]
-        cur_text_ids = all_text_ids[start+i].repeat(k_test, 1) 
-        cur_text_masks = all_text_masks[start+i].repeat(k_test, 1) 
-        cur_text_labels = all_text_labels[start+i].repeat(k_test, 1)
-        cur_rerank_batch = {"image":[cur_images], "text_ids":cur_text_ids, "text_labels":cur_text_labels, "text_masks":cur_text_masks}
-        infer_rerank = pl_module.infer(cur_rerank_batch, mask_text=False, mask_image=False)
+        cur_text_ids = all_text_ids[start + i].repeat(k_test, 1)
+        cur_text_masks = all_text_masks[start + i].repeat(k_test, 1)
+        cur_text_labels = all_text_labels[start + i].repeat(k_test, 1)
+        cur_rerank_batch = {
+            "image": [cur_images],
+            "text_ids": cur_text_ids,
+            "text_labels": cur_text_labels,
+            "text_masks": cur_text_masks,
+        }
+        infer_rerank = pl_module.infer(
+            cur_rerank_batch, mask_text=False, mask_image=False
+        )
         itm_logits = pl_module.itm_score(infer_rerank["cls_feats"])
-        itm_scores = itm_logits[:,1]
-        scores_t2i[start+i, topk_idx] = itm_scores
+        itm_scores = itm_logits[:, 1]
+        scores_t2i[start + i, topk_idx] = itm_scores
 
-    dist.barrier()   
-    torch.distributed.all_reduce(scores_i2t, op=torch.distributed.ReduceOp.SUM) 
-    torch.distributed.all_reduce(scores_t2i, op=torch.distributed.ReduceOp.SUM)    
-
+    dist.barrier()
+    torch.distributed.all_reduce(scores_i2t, op=torch.distributed.ReduceOp.SUM)
+    torch.distributed.all_reduce(scores_t2i, op=torch.distributed.ReduceOp.SUM)
 
     scores_t2i = scores_t2i + scores
     scores_i2t = scores_i2t + scores.t()

@@ -54,9 +54,7 @@ class OMPIClusterEnvironment(pl_env.ClusterEnvironment):
 
 
 def get_cluster_plugin(num_gpus=1, num_nodes=1):
-    if num_nodes > 1 or (
-        num_nodes == 1 and "OMPI_COMM_WORLD_SIZE" in os.environ
-    ):
+    if num_nodes > 1 or (num_nodes == 1 and "OMPI_COMM_WORLD_SIZE" in os.environ):
         rank_zero_info("ClusterPlugin: using OMPI Cluster Environment")
         return OMPIClusterEnvironment()
     if num_gpus >= 1:
@@ -108,15 +106,17 @@ def main(_config):
     resume_ckpt = None
     if _config["resume_during_training"]:
         for index in range(100):
-            ckpt_path = os.path.join(_config["log_dir"], f'{exp_name}_seed{_config["seed"]}_from_{_config["load_path"].split("/")[-1][:-5]}', "version_{}/checkpoints/last.ckpt".format(index))
+            ckpt_path = os.path.join(
+                _config["log_dir"],
+                f'{exp_name}_seed{_config["seed"]}_from_{_config["load_path"].split("/")[-1][:-5]}',
+                "version_{}/checkpoints/last.ckpt".format(index),
+            )
             if os.path.exists(ckpt_path):
                 resume_ckpt = ckpt_path
-    
+
     rank_zero_info("resume_ckpt: {}".format(resume_ckpt))
 
-    cluster_plugin = get_cluster_plugin(
-        _config["num_gpus"], _config["num_nodes"]
-    )
+    cluster_plugin = get_cluster_plugin(_config["num_gpus"], _config["num_nodes"])
     plugin_list = [cluster_plugin]
     rank_zero_info("plugin_list: {}".format(plugin_list))
 
@@ -155,7 +155,15 @@ def main(_config):
             param.requires_grad = False
 
         for name, param in model.named_parameters():
-            for key in ["text_embeddings", "token_type_embeddings", "mlp_text", "norm2_text", "mlm_score", "relative_position_bias_table", "transformer.norm"]:
+            for key in [
+                "text_embeddings",
+                "token_type_embeddings",
+                "mlp_text",
+                "norm2_text",
+                "mlm_score",
+                "relative_position_bias_table",
+                "transformer.norm",
+            ]:
                 if key in name:
                     param.requires_grad = True
 
