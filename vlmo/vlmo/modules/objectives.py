@@ -317,11 +317,11 @@ def compute_itc(pl_module, batch, aggregate=True):
     return ret
 
 
-def compute_irtr(pl_module, batch, aggregate=True):
+def compute_irtr(pl_module, batch, aggregate=True, attention_weights=None):
     # pl_module.logit_scale.data = torch.clamp(pl_module.logit_scale.data, 0, 4.6052)
 
-    infer_imag = pl_module.infer_image_ft(batch, mask_image=False)
-    infer_text = pl_module.infer_text_ft(batch, mask_text=False)
+    infer_imag = pl_module.infer_image_ft(batch, mask_image=False, attention_weights=attention_weights)
+    infer_text = pl_module.infer_text_ft(batch, mask_text=False, attention_weights=attention_weights)
 
     image_features = infer_imag["cls_feats"]
     text_features = infer_text["cls_feats"]

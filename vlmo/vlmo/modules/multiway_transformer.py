@@ -84,7 +84,13 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, mask=None, relative_position_bias=None):
+    def forward(
+        self,
+        x,
+        mask=None,
+        relative_position_bias=None,
+        attn_weights=None,
+    ):
         B, N, C = x.shape
 
         qkv_bias = None
@@ -106,21 +112,25 @@ class Attention(nn.Module):
         )  # make torchscript happy (cannot use tensor as tuple)
 
         q = q * self.scale
-        attn = q.float() @ k.float().transpose(-2, -1)
 
-        if relative_position_bias is not None:
-            attn = attn + relative_position_bias.unsqueeze(0)
+        if attn_weights is not None:
+            attn = attn_weights
+        else:
+            attn = q.float() @ k.float().transpose(-2, -1)
 
-        if mask is not None:
-            mask = mask.bool()
-            attn = attn.masked_fill(~mask[:, None, None, :], float("-inf"))
-        attn = attn.softmax(dim=-1).type_as(x)
-        attn = self.attn_drop(attn)
+            if relative_position_bias is not None:
+                attn = attn + relative_position_bias.unsqueeze(0)
+
+            if mask is not None:
+                mask = mask.bool()
+                attn = attn.masked_fill(~mask[:, None, None, :], float("-inf"))
+            attn = attn.softmax(dim=-1).type_as(x)
+            attn = self.attn_drop(attn)
 
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x
+        return (x, attn)
 
 
 class Block(nn.Module):
@@ -194,13 +204,21 @@ class Block(nn.Module):
 
         self.max_text_len = max_text_len
 
-    def forward(self, x, mask=None, modality_type=None, relative_position_bias=None):
-        x = x + self.drop_path(
-            self.gamma_1
-            * self.attn(
-                self.norm1(x), mask=mask, relative_position_bias=relative_position_bias
-            )
+    def forward(
+        self,
+        x,
+        mask=None,
+        modality_type=None,
+        relative_position_bias=None,
+        attn_weights=None,
+    ):
+        x_attn, attn = self.attn(
+            self.norm1(x),
+            mask=mask,
+            relative_position_bias=relative_position_bias,
+            attn_weights=attn_weights,
         )
+        x = x + self.drop_path(self.gamma_1 * x_attn)
 
         if modality_type == "image":
             x = x + self.drop_path(self.gamma_2 * self.mlp_imag(self.norm2_imag(x)))
@@ -220,7 +238,7 @@ class Block(nn.Module):
             else:
                 x = x + self.drop_path(self.gamma_2 * self.mlp_vl(self.norm2_vl(x)))
 
-        return x
+        return (x, attn)
 
 
 class PatchEmbed(nn.Module):

@@ -503,6 +503,7 @@ class VLMo(pl.LightningModule):
         image_token_type_idx=1,
         image_embeds=None,
         image_masks=None,
+        attention_weights=None,
     ):
         if f"image_{image_token_type_idx - 1}" in batch:
             imgkey = f"image_{image_token_type_idx - 1}"
@@ -536,11 +537,12 @@ class VLMo(pl.LightningModule):
         )
 
         for i, blk in enumerate(self.transformer.blocks):
-            x = blk(
+            x, attn_weights = blk(
                 x,
                 mask=co_masks,
                 modality_type="vl",
                 relative_position_bias=relative_position_bias_list[i],
+                attn_weights=attention_weights,
             )
 
         x = self.transformer.norm(x)
@@ -559,6 +561,7 @@ class VLMo(pl.LightningModule):
             "text_labels": text_labels,
             "text_ids": text_ids,
             "text_masks": text_masks,
+            "attention_weights": attention_weights,
         }
 
         return ret
@@ -637,6 +640,7 @@ class VLMo(pl.LightningModule):
         self,
         batch,
         mask_text=False,
+        attention_weights=None,
     ):
         do_mlm = "_mlm" if mask_text else ""
         text_ids = batch[f"text_ids{do_mlm}"]
@@ -652,18 +656,21 @@ class VLMo(pl.LightningModule):
 
         x = co_embeds
         all_hidden_states = []
+        all_attn_weights = []
         relative_position_bias_list = self.get_rel_pos_bias(
             self.text_relative_position_index
         )
 
         for i, blk in enumerate(self.transformer.blocks):
-            x = blk(
+            x, attn_weights = blk(
                 x,
                 mask=co_masks,
                 modality_type="text",
                 relative_position_bias=relative_position_bias_list[i],
+                attn_weights=attention_weights,
             )
             all_hidden_states.append(x)
+            all_attn_weights.append(attn_weights)
 
         lffn_hiddens = all_hidden_states[-1]
 
@@ -686,6 +693,7 @@ class VLMo(pl.LightningModule):
             "text_labels": text_labels,
             "text_ids": text_ids,
             "text_masks": text_masks,
+            "attn_weights": all_attn_weights,
         }
 
         return ret
@@ -828,6 +836,7 @@ class VLMo(pl.LightningModule):
         image_token_type_idx=1,
         image_embeds=None,
         image_masks=None,
+        attention_weights=None,
     ):
         if f"image_{image_token_type_idx - 1}" in batch:
             imgkey = f"image_{image_token_type_idx - 1}"
@@ -847,18 +856,21 @@ class VLMo(pl.LightningModule):
 
         x = co_embeds
         all_hidden_states = []
+        all_attn_weights = []
         relative_position_bias_list = self.get_rel_pos_bias(
             self.relative_position_index
         )
 
         for i, blk in enumerate(self.transformer.blocks):
-            x = blk(
+            x, attn_weights = blk(
                 x,
                 mask=co_masks,
                 modality_type="image",
                 relative_position_bias=relative_position_bias_list[i],
+                attn_weights=attention_weights,
             )
             all_hidden_states.append(x)
+            all_attn_weights.append(attn_weights)
 
         vffn_hiddens = all_hidden_states[-1]
 
@@ -881,14 +893,16 @@ class VLMo(pl.LightningModule):
             "text_labels": None,
             "text_ids": None,
             "text_masks": None,
+            "attn_weights": all_attn_weights,
         }
 
         return ret
 
-    def forward(self, batch):
+    def forward(self, batch, attention_weights=None):
         ret = dict()
+        # print(f"self.current_tasks: {self.current_tasks}")# self.current_tasks: ['irtr']
         if len(self.current_tasks) == 0:
-            ret.update(self.infer(batch))
+            ret.update(self.infer(batch, attention_weights=attention_weights))
             return ret
 
         # Masked Language Modeling
@@ -905,7 +919,7 @@ class VLMo(pl.LightningModule):
 
         # Contrastive loss for finetuning
         if "irtr" in self.current_tasks:
-            ret.update(objectives.compute_irtr(self, batch))
+            ret.update(objectives.compute_irtr(self, batch, attention_weights=attention_weights))
 
         # Image Text Matching with global hard negative, must use with itc
         if "itm" in self.current_tasks:
@@ -961,18 +975,6 @@ class VLMo(pl.LightningModule):
 
     def configure_optimizers(self):
         return vlmo_utils.set_schedule(self)
-
-    # def on_after_backward(self):
-    #     if self.trainer.global_step % 1 == 0:
-    #         grad_vec = None
-    #         for p in self.parameters():
-    #             # p.grad.data.div_(batch["input"].shape[0])
-    #             if grad_vec is None:
-    #                 grad_vec = p.grad.data.view(-1)
-    #             else:
-    #                 grad_vec = torch.cat((grad_vec, p.grad.data.view(-1)))
-
-    #         print(f"grad_vec.shape: {grad_vec.shape}")
 
     def on_after_backward(self):
         # example to inspect gradient information in tensorboard
