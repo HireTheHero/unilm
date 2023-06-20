@@ -538,12 +538,13 @@ class VLMo(pl.LightningModule):
         )
 
         for i, blk in enumerate(self.transformer.blocks):
+            attention_weight = attention_weights[i] if attention_weights else None
             x, attn_weights = blk(
                 x,
                 mask=co_masks,
                 modality_type="vl",
                 relative_position_bias=relative_position_bias_list[i],
-                attn_weights=attention_weights,
+                attn_weights=attention_weight,
             )
 
         x = self.transformer.norm(x)
@@ -663,12 +664,13 @@ class VLMo(pl.LightningModule):
         )
 
         for i, blk in enumerate(self.transformer.blocks):
+            attention_weight = attention_weights[i] if attention_weights else None
             x, attn_weights = blk(
                 x,
                 mask=co_masks,
                 modality_type="text",
                 relative_position_bias=relative_position_bias_list[i],
-                attn_weights=attention_weights,
+                attn_weights=attention_weight,
             )
             all_hidden_states.append(x)
             all_attn_weights.append(attn_weights)
@@ -864,12 +866,13 @@ class VLMo(pl.LightningModule):
         )
 
         for i, blk in enumerate(self.transformer.blocks):
+            attention_weight = attention_weights[i] if attention_weights else None
             x, attn_weights = blk(
                 x,
                 mask=co_masks,
                 modality_type="image",
                 relative_position_bias=relative_position_bias_list[i],
-                attn_weights=attention_weights,
+                attn_weights=attention_weight,
             )
             all_hidden_states.append(x)
             all_attn_weights.append(attn_weights)
@@ -921,10 +924,8 @@ class VLMo(pl.LightningModule):
 
         # Contrastive loss for finetuning
         if "irtr" in self.current_tasks:
-            ret_irtr = objectives.compute_irtr(self, batch, attention_weights=None)
+            ret_irtr = objectives.compute_irtr(self, batch)
             ret.update(ret_irtr)
-            # print(f"ret_irtr['irtr_image_attn'][-1].shape: {ret_irtr['irtr_image_attn'][-1].shape}")
-            # print(f"ret_irtr['irtr_text_attn'][-1].shape: {ret_irtr['irtr_text_attn'][-1].shape}")
 
         # Image Text Matching with global hard negative, must use with itc
         if "itm" in self.current_tasks:
