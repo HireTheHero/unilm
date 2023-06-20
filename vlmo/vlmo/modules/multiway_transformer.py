@@ -28,6 +28,7 @@ from functools import partial
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from timm.models.registry import register_model
 from pytorch_lightning.utilities.distributed import rank_zero_info
+# from pytorch_lightning.utilities.rank_zero import rank_zero_info
 
 
 class Mlp(nn.Module):

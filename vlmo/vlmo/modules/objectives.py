@@ -11,6 +11,7 @@ import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 from einops import rearrange
 from pytorch_lightning.utilities.distributed import rank_zero_info
+# from pytorch_lightning.utilities.rank_zero import rank_zero_info
 
 from vlmo.modules.dist_utils import all_gather
 
@@ -317,11 +318,96 @@ def compute_itc(pl_module, batch, aggregate=True):
     return ret
 
 
+def infer_modality_ft(pl_module, batch, mask_image=False, mask_text=False, attention_weights=None):
+    infer_imag = pl_module.infer_image_ft(batch, mask_image=mask_image, attention_weights=attention_weights)
+    infer_text = pl_module.infer_text_ft(batch, mask_text=mask_text, attention_weights=attention_weights)
+    return infer_imag, infer_text
+
+def _compute_irtr(pl_module, batch, aggregate=True, attention_weights=None):
+    infer_imag = pl_module.infer_image_ft(batch, mask_image=False, attention_weights=attention_weights)
+    infer_text = pl_module.infer_text_ft(batch, mask_text=False, attention_weights=attention_weights)
+
+    image_attn = infer_imag["attn_weights"]
+    text_attn = infer_text["attn_weights"]
+
+    image_features = infer_imag["cls_feats"]
+    text_features = infer_text["cls_feats"]
+    logit_scale = pl_module.logit_scale.exp().mean()
+
+    if aggregate:
+        world_size = dist.get_world_size()
+        rank = dist.get_rank()
+
+        # We gather tensors from all gpus to get more negatives to contrast with.
+        gathered_image_features = [
+            torch.zeros_like(image_features) for _ in range(world_size)
+        ]
+        gathered_text_features = [
+            torch.zeros_like(text_features) for _ in range(world_size)
+        ]
+        dist.all_gather(gathered_image_features, image_features)
+        dist.all_gather(gathered_text_features, text_features)
+
+        all_image_features = torch.cat(
+            [image_features]
+            + gathered_image_features[:rank]
+            + gathered_image_features[rank + 1 :]
+        )
+        all_text_features = torch.cat(
+            [text_features]
+            + gathered_text_features[:rank]
+            + gathered_text_features[rank + 1 :]
+        )
+
+        # this is needed to send gradients back everywhere.
+        logits_per_image = logit_scale * all_image_features @ all_text_features.t()
+        logits_per_text = logits_per_image.t()
+    else:
+        logits_per_image = logit_scale * image_features @ text_features.t()
+        logits_per_text = logit_scale * text_features @ image_features.t()
+    
+    return logits_per_image, logits_per_text, logit_scale, image_attn, text_attn
+
+
+
 def compute_irtr(pl_module, batch, aggregate=True, attention_weights=None):
+    logits_per_image, logits_per_text, logit_scale, image_attn, text_attn = _compute_irtr(pl_module, batch, aggregate=True, attention_weights=None)
+
+    print(f"image_attn.shape: {image_attn.shape}")
+    print(f"image_attn.requires_grad_: {image_attn.requires_grad}")
+    print(f"logits_per_image.shape: {logits_per_image.shape}")
+    print(f"logits_per_image.requires_grad_: {logits_per_image.requires_grad}")
+
     # pl_module.logit_scale.data = torch.clamp(pl_module.logit_scale.data, 0, 4.6052)
 
     infer_imag = pl_module.infer_image_ft(batch, mask_image=False, attention_weights=attention_weights)
     infer_text = pl_module.infer_text_ft(batch, mask_text=False, attention_weights=attention_weights)
+
+    print(f"infer_imag.keys(): {infer_imag.keys()}")
+    image_attn = infer_imag["attn_weights"][-1]
+    tmp_cls = infer_imag["cls_feats"]
+    text_attn = infer_text["attn_weights"][-1]
+    print(f"image_attn.shape: {image_attn.shape}")
+    print(f"image_attn.requires_grad_: {image_attn.requires_grad}")
+    print(f"tmp_cls.shape: {tmp_cls.shape}")
+    print(f"tmp_cls.requires_grad_: {tmp_cls.requires_grad}")
+
+    torch.set_grad_enabled(True)
+    image_attn.requires_grad_(True)
+    # pl_module.train()
+    infer_imag = pl_module.infer_image_ft(batch, mask_image=False, attention_weights=image_attn)
+    tmp_cls = infer_imag["cls_feats"]
+    print(f"image_attn.requires_grad_: {image_attn.requires_grad}")
+    print(f"tmp_cls.shape: {tmp_cls.shape}")
+    print(f"tmp_cls.requires_grad_: {tmp_cls.requires_grad}")
+    grads = torch.autograd.grad(
+        torch.unbind(tmp_cls[1, :]),
+        image_attn,
+        retain_graph=True,
+    )[0]
+    print(f"grads.shape: {grads.shape}")
+    print(f"grads[1]: {grads[1].sum()}")
+    exit()
 
     image_features = infer_imag["cls_feats"]
     text_features = infer_text["cls_feats"]
@@ -376,6 +462,8 @@ def compute_irtr(pl_module, batch, aggregate=True, attention_weights=None):
         "irtr_t2i_logits": logits_per_text,
         "irtr_labels": ground_truth,
         "irtr_logit_scale": logit_scale,
+        "irtr_image_attn": image_attn,
+        "irtr_text_attn": text_attn,
     }
 
     phase = "train" if pl_module.training else "val"

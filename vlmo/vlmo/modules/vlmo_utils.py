@@ -11,6 +11,7 @@ from vlmo.modules.dist_utils import all_gather
 from vlmo.modules.objectives import compute_irtr_recall, compute_irtr_recall_with_rerank
 from vlmo.gadgets.my_metrics import Accuracy, VQAScore, Scalar
 from pytorch_lightning.utilities.distributed import rank_zero_info
+# from pytorch_lightning.utilities.rank_zero import rank_zero_info
 
 
 def set_metrics(pl_module):

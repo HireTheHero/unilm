@@ -8,7 +8,15 @@ from vlmo.datamodules.multitask_datamodule import MTDataModule
 
 from pytorch_lightning.plugins import environments as pl_env
 from pytorch_lightning.utilities.distributed import rank_zero_info
-
+# from pytorch_lightning.utilities.rank_zero import rank_zero_info
+'''
+pl versioning tips
+https://github.com/Lightning-AI/lightning/issues/13948
+https://github.com/AUTOMATIC1111/stable-diffusion-webui/discussions/4111
+https://github.com/Lightning-AI/lightning/issues/11902
+https://github.com/Lightning-AI/lightning/pull/9366
+https://github.com/Lightning-AI/lightning/pull/6120
+'''
 
 class OMPIClusterEnvironment(pl_env.ClusterEnvironment):
     def __init__(self):
@@ -127,10 +135,12 @@ def main(_config):
         distributed_strategy = "ddp"
 
     trainer = pl.Trainer(
-        gpus=_config["num_gpus"],
+        devices=_config["num_gpus"],
+        # devices=1,
         num_nodes=_config["num_nodes"],
         precision=_config["precision"],
         accelerator="gpu",
+        # accelerator="cpu",
         strategy=distributed_strategy,
         benchmark=True,
         deterministic=True,
@@ -140,14 +150,20 @@ def main(_config):
         logger=logger,
         # prepare_data_per_node=False,
         replace_sampler_ddp=False,
+        # prepare_data_per_node=False,
+        # replace_sampler_ddp=False,
         accumulate_grad_batches=grad_steps,
         log_every_n_steps=10,
+        # flush_logs_every_n_steps=10,
+        # resume_from_checkpoint=resume_ckpt,
+        # weights_summary="top",
         flush_logs_every_n_steps=10,
         resume_from_checkpoint=resume_ckpt,
         weights_summary="top",
         fast_dev_run=_config["fast_dev_run"],
         val_check_interval=_config["val_check_interval"],
         plugins=plugin_list,
+        # inference_mode=False,
     )
 
     if _config["loss_names"]["textmlm"] > 0:

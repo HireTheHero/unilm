@@ -9,6 +9,7 @@ import vlmo.modules.multiway_transformer
 from transformers.models.bert.modeling_bert import BertConfig, BertEmbeddings
 from vlmo.modules import heads, objectives, vlmo_utils
 from pytorch_lightning.utilities.distributed import rank_zero_info
+# from pytorch_lightning.utilities.rank_zero import rank_zero_info
 from scipy import interpolate
 from timm.models import create_model
 
@@ -847,6 +848,7 @@ class VLMo(pl.LightningModule):
         image_embeds, image_masks = self.transformer.visual_embed(img)
 
         image_masks = image_masks.long().to(device=img.get_device())
+        # image_masks = image_masks.long().to(device="cpu")
         image_embeds = image_embeds + self.token_type_embeddings(
             torch.full_like(image_masks, image_token_type_idx)
         )
@@ -898,7 +900,7 @@ class VLMo(pl.LightningModule):
 
         return ret
 
-    def forward(self, batch, attention_weights=None):
+    def forward(self, batch):
         ret = dict()
         # print(f"self.current_tasks: {self.current_tasks}")# self.current_tasks: ['irtr']
         if len(self.current_tasks) == 0:
@@ -919,7 +921,10 @@ class VLMo(pl.LightningModule):
 
         # Contrastive loss for finetuning
         if "irtr" in self.current_tasks:
-            ret.update(objectives.compute_irtr(self, batch, attention_weights=attention_weights))
+            ret_irtr = objectives.compute_irtr(self, batch, attention_weights=None)
+            ret.update(ret_irtr)
+            # print(f"ret_irtr['irtr_image_attn'][-1].shape: {ret_irtr['irtr_image_attn'][-1].shape}")
+            # print(f"ret_irtr['irtr_text_attn'][-1].shape: {ret_irtr['irtr_text_attn'][-1].shape}")
 
         # Image Text Matching with global hard negative, must use with itc
         if "itm" in self.current_tasks:
@@ -959,6 +964,8 @@ class VLMo(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         vlmo_utils.set_task(self)
         output = self(batch)
+        # print([(k, v.shape) for k,v in output.items()])
+        # [('irtr_loss', torch.Size([])), ('irtr_i2t_logits', torch.Size([8, 8])), ('irtr_t2i_logits', torch.Size([8, 8])), ('irtr_labels', torch.Size([8])), ('irtr_logit_scale', torch.Size([]))]
         ret = dict()
 
         if self.hparams.config["loss_names"]["vqa"] > 0:
@@ -966,6 +973,7 @@ class VLMo(pl.LightningModule):
 
         return ret
 
+    # def on_test_epoch_end(self, outs):
     def test_epoch_end(self, outs):
         model_name = self.hparams.config["load_path"].split("/")[-1][:-5]
 
