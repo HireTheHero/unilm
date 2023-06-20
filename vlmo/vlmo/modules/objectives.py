@@ -322,8 +322,8 @@ def _compute_irtr(pl_module, batch, aggregate=True, image_weights=None, text_wei
     infer_imag = pl_module.infer_image_ft(batch, mask_image=False, attention_weights=image_weights)
     infer_text = pl_module.infer_text_ft(batch, mask_text=False, attention_weights=text_weights)
 
-    image_attn = infer_imag["attn_weights"]
-    text_attn = infer_text["attn_weights"]
+    attn_image = infer_imag["attn_weights"]
+    attn_text = infer_text["attn_weights"]
 
     image_features = infer_imag["cls_feats"]
     text_features = infer_text["cls_feats"]
@@ -361,7 +361,7 @@ def _compute_irtr(pl_module, batch, aggregate=True, image_weights=None, text_wei
         logits_per_image = logit_scale * image_features @ text_features.t()
         logits_per_text = logit_scale * text_features @ image_features.t()
     
-    return logits_per_image, logits_per_text, logit_scale, image_attn, text_attn
+    return logits_per_image, logits_per_text, logit_scale, attn_image, attn_text
 
 
 def activate_attn(attn):
@@ -370,42 +370,35 @@ def activate_attn(attn):
     return
 
 
-def extract_grad(attn, logits, class_idx=1):
-    grad_attn = torch.autograd.grad(
-            torch.unbind(logits[class_idx, :]),
+def extract_grad(attn, logits):
+    grads = []
+    for i in range(logits.shape[0]):
+        grad_attn = torch.autograd.grad(
+            torch.unbind(logits[i, :]),
             attn,
             retain_graph=True,
-    )[0]
-    return grad_attn
+        )[0]
+        grads.append(grad_attn)
+    return grads
 
 def compute_irtr(pl_module, batch, aggregate=True):
-    logits_per_image, logits_per_text, logit_scale, image_attn, text_attn = _compute_irtr(pl_module, batch, aggregate=aggregate, image_weights=None, text_weights=None)
+    # print(f"batch.keys(): {batch.keys()}")# ['image', 'iid', 'raw_index', 'replica', 'img_index', 'cap_index', 'text', 'text_ids', 'text_labels', 'text_ids_mlm', 'text_labels_mlm', 'text_masks']
+    logits_per_image, logits_per_text, logit_scale, attn_image, attn_text = _compute_irtr(pl_module, batch, aggregate=aggregate, image_weights=None, text_weights=None)
 
-    print(f"len(image_attn): {len(image_attn)}")
-    print(f"image_attn[-1].shape: {image_attn[-1].shape}")
-    print(f"image_attn[-1].requires_grad_: {image_attn[-1].requires_grad}")
-    print(f"logits_per_image.shape: {logits_per_image.shape}")
-    print(f"logits_per_image.requires_grad_: {logits_per_image.requires_grad}")
+    if attn_image[-1].requires_grad: 
+        # print("Detected training mode.")
+        grad_image, grad_text = None, None
+    else:
+        # print("Detected evaluation mode.")
+        torch.set_grad_enabled(True)
+        activate_attn(attn_image)
+        activate_attn(attn_text)
+        # attn_image.requires_grad_(True)
 
-    torch.set_grad_enabled(True)
-    activate_attn(image_attn)
-    activate_attn(text_attn)
-    # image_attn.requires_grad_(True)
+        logits_per_image_grad,logits_per_text_grad,_,_,_ = _compute_irtr(pl_module, batch, aggregate=aggregate, image_weights=attn_image, text_weights=attn_text)
 
-    logits_per_image_grad,logits_per_text_grad,_,_,_ = _compute_irtr(pl_module, batch, aggregate=aggregate, image_weights=image_attn, text_weights=text_attn)
-
-    print(f"len(image_attn): {len(image_attn)}")
-    print(f"image_attn[-1].shape: {image_attn[-1].shape}")
-    print(f"image_attn[-1].requires_grad_: {image_attn[-1].requires_grad}")
-    print(f"logits_per_image_grad.shape: {logits_per_image_grad.shape}")
-    print(f"logits_per_image_grad.requires_grad_: {logits_per_image_grad.requires_grad}")
-
-    grad_image = extract_grad(image_attn, logits_per_image_grad)
-    grad_text = extract_grad(text_attn, logits_per_text_grad)
-    print(f"grad_image.shape: {grad_image.shape}")
-    print(f"grad_text.shape: {grad_text.shape}")
-    print(f"grad_image.sum(): {grad_image.sum()}")
-    print(f"grad_text.sum(): {grad_text.sum()}")
+        grad_image = extract_grad(attn_image, logits_per_image_grad)
+        grad_text = extract_grad(attn_text, logits_per_text_grad)
 
     ground_truth = (
         torch.arange(len(logits_per_image))
@@ -424,8 +417,10 @@ def compute_irtr(pl_module, batch, aggregate=True):
         "irtr_t2i_logits": logits_per_text,
         "irtr_labels": ground_truth,
         "irtr_logit_scale": logit_scale,
-        "irtr_image_attn": image_attn,
-        "irtr_text_attn": text_attn,
+        "irtr_attn_image": attn_image,
+        "irtr_attn_text": attn_text,
+        "irtr_grad_image": grad_image,
+        "irtr_grad_text": grad_text,
     }
 
     phase = "train" if pl_module.training else "val"

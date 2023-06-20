@@ -2,11 +2,13 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import pandas as pd
 import pytorch_lightning as pl
 import numpy as np
 import vlmo.modules.multiway_transformer
 
 from transformers.models.bert.modeling_bert import BertConfig, BertEmbeddings
+from vlmo.midas.midas import summarize_scores
 from vlmo.modules import heads, objectives, vlmo_utils
 from pytorch_lightning.utilities.distributed import rank_zero_info
 # from pytorch_lightning.utilities.rank_zero import rank_zero_info
@@ -925,6 +927,29 @@ class VLMo(pl.LightningModule):
         # Contrastive loss for finetuning
         if "irtr" in self.current_tasks:
             ret_irtr = objectives.compute_irtr(self, batch)
+            iids = batch["iid"]#batch["iid"]image_ids
+            attn_image, attn_text = ret_irtr["irtr_attn_image"], ret_irtr["irtr_attn_text"]
+            grad_image, grad_text = ret_irtr["irtr_grad_image"], ret_irtr["irtr_grad_text"]
+            # print(f"iid: {iids}")#[379734, 379734, 379734, 379734, 379734, 224051, 224051, 224051]
+            # print(f"len(attn_image): {len(attn_image)}")#12
+            # print(f"attn_image[-1].shape: {attn_image[-1].shape}")#[8, 12, 577, 577]
+            # print(f"len(attn_text): {len(attn_text)}")#12
+            # print(f"attn_text[-1].shape: {attn_text[-1].shape}")#[8, 12, 40, 40]
+            # print(f"grad_image.shape: {grad_image.shape}")#[8, 12, 577, 577]
+            # print(f"grad_text.shape: {grad_text.shape}")#[8, 12, 40, 40])
+            # exit()
+            grad_obj = {
+                "iid": iids, 
+                "cnt_attn_image": np.repeat(torch.numel(attn_image[-1]), len(iids)),
+                "attn_image": attn_image[-1].detach().cpu().sum(axis=[1,2,3]), 
+                "cnt_attn_text": np.repeat(torch.numel(attn_text[-1]), len(iids)),
+                "attn_text": attn_text[-1].detach().cpu().sum(axis=[1,2,3]), 
+                "grad_image": summarize_scores(grad_image), 
+                "grad_text": summarize_scores(grad_text),
+            }
+            os.makedirs(f"{self.hparams.config['log_dir']}/grad", exist_ok=True)
+            pd.DataFrame(grad_obj).to_csv(f"{self.hparams.config['log_dir']}/grad/grad_{iids[0]}_{iids[-1]}.csv", index=False)
+            exit()
             ret.update(ret_irtr)
 
         # Image Text Matching with global hard negative, must use with itc
@@ -985,20 +1010,20 @@ class VLMo(pl.LightningModule):
     def configure_optimizers(self):
         return vlmo_utils.set_schedule(self)
 
-    def on_after_backward(self):
-        # example to inspect gradient information in tensorboard
-        if self.trainer.global_step % 25 == 0:  # don't make the tf file huge
-            params = self.state_dict()
-            for k, v in params.items():
-                grads = v
-                name = k
-                print(f"name: {name}")
-                if v is None:
-                    print(f"v is None")
-                else:
-                    print(f"v.shape: {v.shape}")
-                self.logger.experiment.add_histogram(
-                    tag=name,
-                    values=grads,
-                    global_step=self.trainer.global_step,
-                )
+    # def on_after_backward(self):
+    #     # example to inspect gradient information in tensorboard
+    #     if self.trainer.global_step % 25 == 0:  # don't make the tf file huge
+    #         params = self.state_dict()
+    #         for k, v in params.items():
+    #             grads = v
+    #             name = k
+    #             print(f"name: {name}")
+    #             if v is None:
+    #                 print(f"v is None")
+    #             else:
+    #                 print(f"v.shape: {v.shape}")
+    #             self.logger.experiment.add_histogram(
+    #                 tag=name,
+    #                 values=grads,
+    #                 global_step=self.trainer.global_step,
+    #             )
